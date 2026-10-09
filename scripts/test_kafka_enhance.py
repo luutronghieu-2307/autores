@@ -35,6 +35,8 @@ async def run_test():
         "proposal": {
             "title": "Nghiên cứu ứng dụng AI trong giáo dục",
             "field": "Khoa học máy tính",
+            "research_gap": "Chưa có nhiều nghiên cứu thực nghiệm về hiệu quả của mô hình AI trong giáo dục đại học tại Việt Nam.",
+            "web_search": "Tổng quan các xu hướng nghiên cứu mới nhất năm 2026 về AI trong chuyển đổi số giáo dục.",
         },
     }
 

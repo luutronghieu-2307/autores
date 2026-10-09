@@ -190,7 +190,7 @@ class ChatbotEventListener(BaseAsyncListener):
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
                         "embed_tokens": embed_tokens,
-                        "embed_model": module.embeddings.model,
+                        "embed_model": getattr(module.embeddings, "model", getattr(module.embeddings, "model_name", "BAAI/bge-small-en-v1.5")),
                         "web_search_call": web_search_call,
                         "functionality_error": response == "Function does not support",
                     })
@@ -307,7 +307,7 @@ class ChatbotEventListener(BaseAsyncListener):
                     message["input_tokens"] = input_tokens
                     message["output_tokens"] = output_tokens
                     message["embed_tokens"] = embed_tokens
-                    message["embed_model"] = module.embeddings.model
+                    message["embed_model"] = getattr(module.embeddings, "model", getattr(module.embeddings, "model_name", "BAAI/bge-small-en-v1.5"))
                     message["web_search_call"] = web_search_call
                     message["conv_id"] = conv_id
                     message["document_id"] = document_id

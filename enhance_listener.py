@@ -147,7 +147,7 @@ class EnhancementEventListener(BaseAsyncListener):
                         "input_tokens": module.input_tokens,
                         "output_tokens": module.output_tokens,
                         "embed_tokens": module.embed_tokens,
-                        "embed_model": module.embeddings.model,
+                        "embed_model": getattr(module.embeddings, "model", getattr(module.embeddings, "model_name", "BAAI/bge-small-en-v1.5")),
                         "web_search_call": 0,
                         "user_id": user_id,
                         "section_id": section_id,
@@ -230,7 +230,7 @@ class EnhancementEventListener(BaseAsyncListener):
                         "input_tokens": total_input_tokens,
                         "output_tokens": total_output_tokens,
                         "embed_tokens": module.embed_tokens,
-                        "embed_model": module.embeddings.model,
+                        "embed_model": getattr(module.embeddings, "model", getattr(module.embeddings, "model_name", "BAAI/bge-small-en-v1.5")),
                         "web_search_call": 0,
                     })
                     message["disable_edit"] = len(section) == 0
