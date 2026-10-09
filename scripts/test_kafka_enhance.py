@@ -29,7 +29,7 @@ async def run_test():
         "document_id": doc_id,
         "section_id": section_id,
         "language": "Vietnamese",
-        "action": "expand",
+        "action": "longer",
         "paragraphs": "Trí tuệ nhân tạo đang làm thay đổi mạnh mẽ phương thức nghiên cứu khoa học.",
         "paragraph_context": "Bối cảnh nghiên cứu về ứng dụng của AI trong chuyển đổi số giáo dục đại học.",
         "proposal": {

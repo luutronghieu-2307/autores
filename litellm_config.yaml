@@ -11,13 +11,18 @@ model_list:
   # Alias "localhost" để map trực tiếp với model mặc định của Groq
   - model_name: localhost
     litellm_params:
-      model: groq/llama-3.3-70b-versatile
+      model: groq/openai/gpt-oss-120b
       api_key: "os.environ/GROQ_API_KEY"
 
-  # Các model Groq khác nếu muốn gọi cụ thể
-  - model_name: groq/llama-3.3-70b-versatile
+  - model_name: localhost
     litellm_params:
-      model: groq/llama-3.3-70b-versatile
+      model: groq/llama-3.1-8b-instant
+      api_key: "os.environ/GROQ_API_KEY"
+
+  # Các model Groq nếu muốn gọi cụ thể
+  - model_name: openai/gpt-oss-120b
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
       api_key: "os.environ/GROQ_API_KEY"
 
   - model_name: groq/llama-3.1-8b-instant
@@ -28,11 +33,6 @@ model_list:
   - model_name: groq/mixtral-8x7b-32768
     litellm_params:
       model: groq/mixtral-8x7b-32768
-      api_key: "os.environ/GROQ_API_KEY"
-
-  - model_name: openai/gpt-oss-120b
-    litellm_params:
-      model: groq/llama-3.3-70b-versatile
       api_key: "os.environ/GROQ_API_KEY"
 
 general_settings:
