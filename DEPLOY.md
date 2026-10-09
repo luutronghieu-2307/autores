@@ -93,6 +93,24 @@ chmod +x deploy.sh
 ./deploy.sh --app-only      # Chỉ khởi động 4 AI Service (yêu cầu hạ tầng đã chạy sẵn)
 ```
 
+### 🛑 Các Lệnh Tạm Dừng & Quản Lý Container Nhanh trên VPS:
+```bash
+# 1. TẠM DỪNG riêng 4 AI Service để sửa code/cấu hình (Hạ tầng vẫn giữ nguyên)
+docker compose -f docker-compose-app.yaml stop
+
+# 2. BẬT LẠI sau khi sửa xong
+docker compose -f docker-compose-app.yaml start
+
+# 3. KHỞI ĐỘNG LẠI nhanh 4 AI Service
+docker compose -f docker-compose-app.yaml restart
+
+# 4. TẮT HOÀN TOÀN TẤT CẢ (4 AI Service + Toàn bộ Hạ tầng)
+docker compose -f docker-compose-infra.yaml -f docker-compose-app.yaml down
+
+# 5. TẠM DỪNG NHANH tất cả container đang chạy (Emergency Pause)
+docker stop $(docker ps -q)
+```
+
 ---
 
 ## 🛠️ 4. QUY TRÌNH TRIỂN KHAI THỦ CÔNG (TÙY CHỌN NẾU KHÔNG DÙNG SCRIPT)
