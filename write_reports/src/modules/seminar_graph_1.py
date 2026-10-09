@@ -1,0 +1,437 @@
+import asyncio
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import interrupt, Checkpointer, Send
+import logging
+import operator
+from typing import Annotated
+from typing_extensions import TypedDict
+
+from write_reports.src.modules.references import format_ref_in_ref_section
+from translate import LANGUAGE_KIT
+from write_reports.src.modules.utils.utils_func import (
+    _load_model,
+    _section_synthesizer,
+    write,
+    write_no_sub,
+    are_sections_disjoint,
+    _get_literature_review_section,
+    get_literature_review_table,
+    validate_sublists,
+    get_table,
+    get_appendices,
+    load_current_section,
+)
+from write_reports.src.modules.write_prompt_bank import (
+    batch_prompt,
+    section_writer_without_seminar_instructions, 
+)
+from write_reports.src.schemas.section import (
+    ExecutionPlan,
+    SectionDescription, 
+    SubSectionDescription, 
+    SectionContentWithTokenCount, 
+    LitSection,
+)
+
+from get_llm_response import get_llm, get_answer_with_schema
+from utils import markdownify_keep_images
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+logger = logging.getLogger(__name__)
+
+
+class State(TypedDict):
+    change_section: bool
+    completed_subsections: Annotated[
+        list[SectionContentWithTokenCount],
+        operator.add
+    ]
+    current_count_batch: int
+    current_section: SectionDescription
+    current_section_batch: ExecutionPlan
+    db_key: str
+    document_id: str
+    domain: str
+    end_section: bool
+    embed_model: str
+    embed_tokens: int
+    embed_uuids: list[str]
+    existing_refs: list[dict]
+    field: str
+    key_points_map: dict
+    input_tokens: int
+    language: str
+    llm_key: str
+    lit_review: int
+    model_id: str
+    new_content: dict
+    other_sections: list[dict]
+    outline: dict
+    outline_code: list[str]
+    output_tokens: int
+    proposal: dict
+    propose_method: int
+    references_style: str
+    research_papers: dict
+    title: str
+    tab_count_section: int
+    retry: int
+    seen_chunk: dict
+    use_web_search: bool
+    search_key: str
+
+
+class Worker(TypedDict):
+    llm_key: str
+    completed_subsections: Annotated[
+        list[SectionContentWithTokenCount],
+        operator.add
+    ]
+    current_report: str
+    domain: str
+    document_id: str
+    field: str
+    language: str
+    model_id: str
+    proposal: dict
+    retry: int
+    section: SectionDescription
+    outline: dict
+    subsection: SubSectionDescription
+    search_phase: int
+    search_key: str
+
+
+async def load_model(state: State):
+    return await _load_model(state)
+
+
+async def choose_refs(state: State):
+    title_section = {
+        "name": "title",
+        "content": f"# {state["proposal"]["title"]}",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "current_refs": [],
+    }
+    llm = get_llm(state["model_id"], state["llm_key"])
+    lit_review = ["related work", "related works", "literature review", "tổng quan tài liệu"]
+    headings = [
+        section["heading"].split(" ", 1)[-1] if "." in section["heading"].split(" ")[0] else section["heading"] 
+        for section in state["outline"]["outline"]
+    ]
+    found_lit_review = False
+    for section_count, heading in enumerate(headings):
+        if heading.lower() in lit_review:
+            lit_section = LitSection(lit_review=section_count + 1)
+            input_tokens = 0
+            output_tokens = 0
+            found_lit_review = True
+            break
+    if not found_lit_review:
+        error, success, lit_section, input_tokens, output_tokens = await _get_literature_review_section(state['document_id'][:8], headings, state["model_id"], llm)
+        if not success:
+            if error.status_code in [401, 403, 429, 500]:
+                raise error
+            lit_section = LitSection(lit_review=0)
+    return {
+        "other_sections": [title_section],
+        "change_section": True,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "lit_review": lit_section.lit_review,
+    }
+
+
+async def write_section(state: State):
+    if len(state["other_sections"]):
+        result = interrupt({
+            "break_point": "chapter_break",
+            "ref_table": [],
+            "disable_edit": False,
+        })
+        state["model_id"] = result["model_id"]
+        state["llm_key"] = result["llm_key"]
+        state["db_key"] = result["db_key"]
+        state["use_web_search"] = result["use_web_search"]
+        state["search_key"] = result["search_key"]
+    state, current_section, _ = await load_current_section(state)
+    return {
+        "other_sections": state["other_sections"],
+        "model_id": state["model_id"],
+        "llm_key": state["llm_key"],
+        "db_key": state["db_key"],
+        "tab_count_section": 0,
+        "change_section": False,
+        "current_count_batch": 0,
+        "current_section": current_section,
+        "seen_chunk": state["seen_chunk"],
+        "research_papers": state["research_papers"],
+        "key_points_map": state["key_points_map"],
+        "outline": state["outline"],
+        "use_web_search": state["use_web_search"],
+        "search_key": state["search_key"],
+    }
+
+
+async def create_subsection_batch(state: State):
+    logger.info(f"[{state['document_id'][:8]}] Creating batches for section: '{state["current_section"].heading}'")
+    content = f"Here is the section data:\n{state["current_section"]}\nGenerate from 0 to {len(state["current_section"].subsections) - 1}"
+    if len(state["current_section"].subsections):
+        llm = get_llm(state["model_id"], state["llm_key"])
+        success = False
+        retry = 0
+        while not success and retry < 3:
+            retry += 1
+            try:
+                error, success, current_section_batch, input_tokens, output_tokens = await get_answer_with_schema(
+                    state["document_id"][:8],
+                    llm,
+                    batch_prompt,
+                    content,
+                    ExecutionPlan
+                )
+                if not success:
+                    if error.status_code in [401, 403, 429, 500]:
+                        raise error
+                state["input_tokens"] += input_tokens
+                state["output_tokens"] += output_tokens
+                current_section_batch.plan = [sorted(set(batch)) for batch in current_section_batch.plan]
+                batch_len = sum([len(batch) for batch in current_section_batch.plan])
+                success = batch_len == len(state["current_section"].subsections)
+            except Exception as e:
+                logger.error(f"[{state['document_id'][:8]}] {e}")
+        if not success or not are_sections_disjoint(current_section_batch.plan) or not validate_sublists(current_section_batch.plan):                    
+            current_section_batch = ExecutionPlan(plan=[[i] for i in range(len(state["current_section"].subsections))])
+        if current_section_batch.plan[0][0] != 0 and success:
+            current_section_batch.plan = [[[item - current_section_batch.plan[0][0]] for item in batch] for batch in current_section_batch.plan]
+        final_batch: list[list[SubSectionDescription]] = []
+        for batch in current_section_batch.plan:
+            subsection_batch: list[SubSectionDescription] = []
+            for item in batch:
+                subsection_batch.append(state["current_section"].subsections[item])
+            if subsection_batch:
+                final_batch.append(subsection_batch)
+        return {
+            "current_count_batch": 0,
+            "current_section_batch": final_batch,
+            "input_tokens": state["input_tokens"],
+            "output_tokens": state["output_tokens"],
+        }
+    else:
+        return {
+            "current_section_batch": [],
+            "input_tokens": state["input_tokens"],
+            "output_tokens": state["output_tokens"],
+        }
+
+
+def assign_workers_subsection(state: State):
+    if len(state["current_section_batch"]):
+        current_report = "\n\n".join(
+            [
+                f"{other_section["content"]}" for other_section in state["other_sections"]
+            ]
+        )
+
+        return [
+            Send(
+                "write_subsection",
+                {
+                    "outline": state["outline"],
+                    "section": state["current_section"],
+                    "subsection": subsection,
+                    "proposal": state["proposal"],
+                    "language": state["language"],
+                    "field": state["field"],
+                    "domain": state["domain"],
+                    "current_report": markdownify_keep_images(current_report),
+                    "retry": state["retry"],
+                    "model_id": state["model_id"],
+                    "llm_key": state["llm_key"],
+                    "search_phase": 1 if state["use_web_search"] else 0,
+                    "search_key": state["search_key"],
+                    "document_id": state["document_id"],
+                },
+            ) for subsection in state["current_section_batch"][state["current_count_batch"]]
+        ]
+    else:
+        return Send(
+            "write_subsection",
+            {
+                "outline": state["outline"],
+                "section": state["current_section"],
+                "proposal": state["proposal"],
+                "language": state["language"],
+                "field": state["field"],
+                "domain": state["domain"],
+                "current_report": markdownify_keep_images(current_report),
+                "subsection": SubSectionDescription(detail_description="", subheading="", subheading_word_count="0-0"),
+                "retry": state["retry"],
+                "model_id": state["model_id"],
+                "llm_key": state["llm_key"],
+                "search_phase": 1 if state["use_web_search"] else 0,
+                "search_key": state["search_key"],
+                "document_id": state["document_id"],
+            },
+        )
+
+
+async def write_subsection(state: Worker):
+    """Worker writes a section of the report based on given information"""
+    llm = get_llm(state["model_id"], state["llm_key"])
+    if len(state["subsection"].subheading):
+        section_with_token_count = await write(state, llm, section_writer_without_seminar_instructions)
+    else:
+        section_with_token_count = await write_no_sub(state, llm, section_writer_without_seminar_instructions)
+    return {"completed_subsections": [section_with_token_count]}
+
+
+def continue_to_write_subsection(state: State):
+    if state["current_count_batch"] == len(state["current_section_batch"]) - 1 or not len(state["current_section"].subsections):
+        if len(state["other_sections"]) - 1 != len(state["outline"]["outline"]):
+            return "write_section"
+        else:
+            return "add_ref"
+    else:
+        return "increment_count_batch"
+
+
+async def increment_count_batch(state: State):
+    return {"current_count_batch": state["current_count_batch"] + 1}
+
+
+async def section_synthesizer(state: State):
+    logger.info(f"[{state['document_id'][:8]}] Synthesize section {state['current_section'].heading}")
+    end_section = False
+    if state["current_count_batch"] == 0:
+        if len(state["current_section"].subsections):
+            num_subsection = len(state["current_section_batch"][state["current_count_batch"]])
+        else:
+            num_subsection = 1
+        section_count = len(state["other_sections"]) - 1
+        section_dict, state["existing_refs"] = await _section_synthesizer(state, section_count, num_subsection)
+        section_dict["section_code"] = state["outline_code"][section_count]
+        section_dict, table_count = get_table(section_dict, section_count + 1, state["tab_count_section"], state["language"])
+        if state["current_count_batch"] == len(state["current_section_batch"]) - 1:
+            if section_count == state["lit_review"] - 1:
+                lit_review_table = get_literature_review_table(state, state["research_papers"], state["lit_review"], state["language"], table_count)
+                section_dict["content"] = section_dict["content"] + "\n\n" + lit_review_table
+            if len(state["other_sections"]) - 1 == len(state["outline"]["outline"]):
+                end_section = True
+        state["other_sections"].append(section_dict)
+        return {
+            "tab_count_section": table_count,
+            "new_content": section_dict,
+            "end_section": end_section,
+            "other_sections": state["other_sections"],
+            "existing_refs": state["existing_refs"],
+        }
+    else:
+        num_subsection = sum([len(batch) for batch in state["current_section_batch"][:state["current_count_batch"] + 1]])
+        existing_subsection = num_subsection - len(state["current_section_batch"][state["current_count_batch"]])
+        section_count = len(state["other_sections"]) - 2
+        section_dict, state["existing_refs"] = await _section_synthesizer(state, section_count, num_subsection)
+        section_dict["section_code"] = state["outline_code"][section_count]
+        content = section_dict["content"].split(f"## {section_count + 1}.{existing_subsection + 1}. ")[-1]
+        section_dict["content"] = f"## {section_count + 1}.{existing_subsection + 1}. " + content
+        section_dict, table_count = get_table(section_dict, section_count + 1, state["tab_count_section"], state["language"])
+        if state["current_count_batch"] == len(state["current_section_batch"]) - 1:
+            if section_count == state["lit_review"] - 1:
+                lit_review_table = get_literature_review_table(state, state["research_papers"], state["lit_review"], state["language"], table_count)
+                section_dict["content"] = section_dict["content"] + "\n" + lit_review_table
+            if len(state["other_sections"]) - 1 == len(state["outline"]["outline"]):
+                end_section = True
+        state["other_sections"][-1]["content"] = state["other_sections"][-1]["content"] + "\n\n" + section_dict["content"]
+        return {
+            "tab_count_section": table_count,
+            "new_content": section_dict,
+            "end_section": end_section,
+            "other_sections": state["other_sections"],
+            "existing_refs": state["existing_refs"],
+        }
+
+
+def continue_to_write(state: State):
+    return len(state["other_sections"]) - 1 != len(state["outline"]["outline"])
+
+
+async def add_ref(state: State):
+    result = interrupt({
+        "break_point": "chapter_break",
+        "disable_edit": True,
+    })
+    state["model_id"] = result["model_id"]
+    state["llm_key"] = result["llm_key"]
+    state["db_key"] = result["db_key"]
+    tasks = [
+        format_ref_in_ref_section(
+            title, 
+            state["research_papers"], 
+            state["references_style"]
+        ) for title in state["existing_refs"]
+    ]
+    refs = await asyncio.gather(*tasks)
+    if state["references_style"] in ["Vancouver", "IEEE"]:
+        refs = [f"[{i + 1}] {ref}" for i, ref in enumerate(refs)]
+    language_dict = LANGUAGE_KIT.get(state["language"].lower(), LANGUAGE_KIT["tiếng việt"])
+    ref_section = {
+        "name": "references",
+        "content": f"# {language_dict["References"]}\n\n{"\n\n".join(refs)}".replace(r'\n', '\n'),
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "embed_tokens": 0,
+        "section_code": state["outline_code"][-2],
+        "current_refs": [],
+    }
+    state["other_sections"].append(ref_section)
+    return {
+        "other_sections": state["other_sections"],
+        "change_section": True,
+    }
+
+
+async def write_appendices(state: State):
+    return await get_appendices(state)
+
+
+async def get_graph(checkpointer: Checkpointer):
+    writer_builder = StateGraph(State)
+
+    writer_builder.add_node("load_model", load_model)
+    writer_builder.add_node("choose_refs", choose_refs)
+    writer_builder.add_node("write_section", write_section)
+    writer_builder.add_node("create_subsection_batch", create_subsection_batch)
+    writer_builder.add_node("write_subsection", write_subsection)
+    writer_builder.add_node("increment_count_batch", increment_count_batch)
+    writer_builder.add_node("section_synthesizer", section_synthesizer)
+    writer_builder.add_node("add_ref", add_ref)
+    writer_builder.add_node("write_appendices", write_appendices)
+
+    writer_builder.add_edge(START, "load_model")
+    writer_builder.add_edge("load_model", "choose_refs")
+    writer_builder.add_edge("choose_refs", "write_section")
+    writer_builder.add_edge("write_section", "create_subsection_batch")
+    writer_builder.add_conditional_edges(
+        "create_subsection_batch",
+        assign_workers_subsection,
+        ["write_subsection"],
+    )
+    writer_builder.add_edge("write_subsection", "section_synthesizer")
+    writer_builder.add_conditional_edges(
+        "section_synthesizer", continue_to_write_subsection, {
+            "add_ref": "add_ref", 
+            "write_section": "write_section",
+            "increment_count_batch": "increment_count_batch",
+        }
+    )
+    writer_builder.add_conditional_edges(
+        "increment_count_batch", 
+        assign_workers_subsection,
+        ["write_subsection"],
+    )
+    writer_builder.add_edge("add_ref", "write_appendices")
+    writer_builder.add_edge("write_appendices", END)
+
+    return writer_builder.compile(checkpointer=checkpointer)

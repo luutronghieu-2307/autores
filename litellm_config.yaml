@@ -1,0 +1,43 @@
+# ==============================================================================
+# LITELLM PROXY CONFIGURATION FOR AUTORESEARCHING
+# ==============================================================================
+# Hướng dẫn:
+# 1. Đặt GROQ_API_KEY trong file .env hoặc biến môi trường.
+# 2. LiteLLM Proxy nhận request từ autoresearching với model_id "localhost"
+#    và tự động chuyển tiếp tới Groq API (siêu tốc).
+# ==============================================================================
+
+model_list:
+  # Alias "localhost" để map trực tiếp với model mặc định của Groq
+  - model_name: localhost
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: "os.environ/GROQ_API_KEY"
+
+  # Các model Groq khác nếu muốn gọi cụ thể
+  - model_name: groq/llama-3.3-70b-versatile
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: "os.environ/GROQ_API_KEY"
+
+  - model_name: groq/llama-3.1-8b-instant
+    litellm_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: "os.environ/GROQ_API_KEY"
+
+  - model_name: groq/mixtral-8x7b-32768
+    litellm_params:
+      model: groq/mixtral-8x7b-32768
+      api_key: "os.environ/GROQ_API_KEY"
+
+  - model_name: openai/gpt-oss-120b
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: "os.environ/GROQ_API_KEY"
+
+general_settings:
+  dangerously_permit_weak_or_unset_master_key: true
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false

@@ -1,0 +1,64 @@
+#!/usr/bin/env groovy
+
+node {
+  properties([disableConcurrentBuilds()])
+
+  try {
+
+    remoteHost = "jenkins@192.168.3.140"
+    prefix = "enhance"
+    path = "/u01/autoresearching-ai-dev-${prefix}"
+
+    stage('Workspace Clearing') {
+      cleanWs()
+    }
+
+    stage('checkout code') {
+      checkout scm
+      sh "git checkout ${env.BRANCH_NAME} && git reset --hard origin/${env.BRANCH_NAME}"
+    }
+
+    sshagent(['jenkins-ssh']) {
+
+        stage('remove old code') {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${remoteHost} 'cd ${path} && sudo rm -rf ./{,.[!.],..?}*'
+            """
+        }
+
+        stage('copy code') {
+          sh """
+            scp -r -o StrictHostKeyChecking=no ./.[!.]* ${remoteHost}:${path}
+            scp -r -o StrictHostKeyChecking=no ./* ${remoteHost}:${path}
+            """
+        }
+
+        stage('build code') {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${remoteHost} 'cd ${path} && sudo docker buildx build --no-cache --network host -t autoresearching-ai-dev-${prefix} -f Dockerfile ./'
+            """
+        }
+
+        stage('deploy code') {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${remoteHost} 'cd ${path} && sudo docker-compose -f docker-compose-${prefix}.yaml down && sudo docker-compose -f docker-compose-${prefix}.yaml up -d'
+            """
+        }
+
+        stage('remove cache') {
+          // Use Jenkins lock to prevent concurrent docker prune operations
+          lock(resource: 'docker-prune-lock', inversePrecedence: true) {
+            echo "Acquired lock for docker prune operation"
+            sh """
+              ssh -o StrictHostKeyChecking=no ${remoteHost} 'sudo docker system prune -a -f'
+            """
+            echo "Released lock for docker prune operation"
+          }
+        }
+    }
+
+  } catch (e) {
+    currentBuild.result = "FAILED"
+    throw e
+  }
+}

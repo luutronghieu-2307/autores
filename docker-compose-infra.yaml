@@ -1,0 +1,181 @@
+services:
+  # ==============================================================================
+  # 1. APACHE KAFKA (KRaft mode - Không cần Zookeeper)
+  # ==============================================================================
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: autoresearching-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_DIRS: '/var/lib/kafka/data'
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - autoresearching-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ==============================================================================
+  # 2. KAFKA UI (Giao diện web trực quan để theo dõi message Kafka)
+  # ==============================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: autoresearching-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - autoresearching-net
+
+  # ==============================================================================
+  # 3. REDIS STACK SERVER (Tích hợp RediSearch, RedisJSON cho LangGraph)
+  # ==============================================================================
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: autoresearching-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    environment:
+      REDIS_ARGS: "--requirepass redis_password_local"
+    volumes:
+      - redis_data:/data
+    networks:
+      - autoresearching-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_password_local", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ==============================================================================
+  # 4. MONGODB (Lưu trữ documents, outlines, chat history)
+  # ==============================================================================
+  mongodb:
+    image: mongo:7.0
+    container_name: autoresearching-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: mongo_password_local
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - autoresearching-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # 5. QDRANT (Vector Database phục vụ RAG / Ingest tài liệu)
+  # ==============================================================================
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: autoresearching-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - autoresearching-net
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && echo -e \"GET /readyz HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && cat <&3 | grep -q \"200 OK\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # 6. MINIO (Object Storage tương thích AWS S3 để lưu PDF, báo cáo)
+  # ==============================================================================
+  minio:
+    image: elestio/minio:latest
+    container_name: autoresearching-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_password_local
+    volumes:
+      - minio_data:/data
+    networks:
+      - autoresearching-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # 7. LITELLM PROXY (Cầu nối tích hợp Groq / Local LLM theo chuẩn OpenAI API)
+  # ==============================================================================
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: autoresearching-litellm
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - LITELLM_DANGEROUSLY_PERMIT_WEAK_OR_UNSET_MASTER_KEY=true
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    command: ["--config", "/app/config.yaml", "--port", "8000"]
+    networks:
+      - autoresearching-net
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health/liveliness\")' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  autoresearching-net:
+    name: autoresearching-net
+    driver: bridge
+
+volumes:
+  kafka_data:
+    name: autoresearching_kafka_data
+  redis_data:
+    name: autoresearching_redis_data
+  mongo_data:
+    name: autoresearching_mongo_data
+  qdrant_data:
+    name: autoresearching_qdrant_data
+  minio_data:
+    name: autoresearching_minio_data

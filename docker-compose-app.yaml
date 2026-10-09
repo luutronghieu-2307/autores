@@ -1,0 +1,63 @@
+services:
+  # ==============================================================================
+  # 1. DOCUMENT SETUP SERVICE (Sinh đề tài, tìm paper, outline, ingest tài liệu)
+  # ==============================================================================
+  autoresearching-doc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: autoresearching-ai:latest
+    container_name: autoresearching-doc
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./tmp:/tmp/autoresearching
+    command: ["python", "main_doc_local.py"]
+
+  # ==============================================================================
+  # 2. WRITE SERVICE (Viết báo cáo, chuyên đề, slide, phân tích dữ liệu)
+  # ==============================================================================
+  autoresearching-write:
+    image: autoresearching-ai:latest
+    container_name: autoresearching-write
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./tmp:/tmp/autoresearching
+    command: ["python", "main_write_local.py"]
+
+  # ==============================================================================
+  # 3. CHATBOT SERVICE (AI Chatbot hỗ trợ viết & trả lời nghiên cứu)
+  # ==============================================================================
+  autoresearching-chat:
+    image: autoresearching-ai:latest
+    container_name: autoresearching-chat
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./tmp:/tmp/autoresearching
+    command: ["python", "main_chat_local.py"]
+
+  # ==============================================================================
+  # 4. ENHANCEMENT SERVICE (AI in doc, gợi ý nâng cao nội dung)
+  # ==============================================================================
+  autoresearching-enhance:
+    image: autoresearching-ai:latest
+    container_name: autoresearching-enhance
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./tmp:/tmp/autoresearching
+    command: ["python", "main_enhance_local.py"]

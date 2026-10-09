@@ -1,0 +1,11 @@
+venv/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ruff_cache/
+tasks/
+.env
+tmp/
+*.log
