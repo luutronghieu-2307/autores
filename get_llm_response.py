@@ -98,7 +98,7 @@ def get_llm(
 ) -> ChatGoogleGenerativeAI | ChatOpenAI:
     if "gemini" in model_id:
         llm = ChatGoogleGenerativeAI(model=model_id, google_api_key=llm_key, max_output_tokens=max_output_tokens, temperature=temperature, top_p=0.9)
-    elif "gpt" in model_id:
+    elif "gpt" in model_id and not ("oss" in model_id or "groq" in model_id or "local" in model_id):
         if "gpt-5" in model_id:
             llm = ChatOpenAI(
                 model=model_id,
@@ -115,11 +115,11 @@ def get_llm(
                 temperature=temperature,
                 top_p=0.9
             )
-    elif model_id == "localhost" or model_id.startswith("groq") or model_id.startswith("local"):
+    elif model_id == "localhost" or "oss" in model_id or model_id.startswith("groq") or model_id.startswith("local"):
         llm = ChatOpenAI(
-            model="localhost",
+            model=model_id if model_id != "localhost" else "localhost",
             api_key="None",
-            base_url=settings.LOCALLLM_BASE_URL,
+            base_url=settings.LOCALLLM_BASE_URL or "http://localhost:8000/v1",
             max_tokens=max_output_tokens,
             temperature=temperature,
         )
