@@ -179,6 +179,8 @@ set -a
 source .env 2>/dev/null || true
 set +a
 
+MISSING_KEYS=()
+
 # Yêu cầu ít nhất 1 API key LLM (OPEN_AI_KEY, GEMINI_KEY, hoặc GROQ_API_KEY)
 if [[ -z "${OPEN_AI_KEY:-}" ]] && [[ -z "${GEMINI_KEY:-}" ]] && [[ -z "${GROQ_API_KEY:-}" ]]; then
   MISSING_KEYS+=("Cần ít nhất 1 trong 3 key: OPEN_AI_KEY, GEMINI_KEY hoặc GROQ_API_KEY")
